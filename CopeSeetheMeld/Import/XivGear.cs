@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace CopeSeetheMeld.Import;
@@ -8,20 +9,21 @@ public partial class Import
 {
     public record class XGSetCollection
     {
-        public required string name;
-        public required List<XGSet> sets;
+        public string? name;
+        public List<XGSet>? sets;
     }
 
     public record class XGSet
     {
-        public required string name;
-        public required Dictionary<string, XGItem> items;
+        public string? name;
+        public Dictionary<string, XGItem>? items;
+        public bool isSeparator;
     }
 
     public record class XGItem
     {
         public uint id;
-        public required List<XGId> materia;
+        public List<XGId>? materia;
     }
 
     public record class XGId
@@ -32,33 +34,63 @@ public partial class Import
     private async System.Threading.Tasks.Task ImportXIVG(string shortcode, string gearIndex)
     {
         var ix = gearIndex.Length == 0 ? -1 : int.Parse(gearIndex);
-
         var contents = await client.GetStringAsync($"https://api.xivgear.app/shortlink/{shortcode}");
+        ImportXIVGJson(contents, ix);
+    }
+
+    // accepts a sheet ({"sets": [...]}) or a bare set ({"items": {...}})
+    private void ImportXIVGJson(string contents, int ix)
+    {
+        using var doc = JsonDocument.Parse(contents);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new Exception("Not a valid xivgear JSON object");
+
         XGSet xgs;
-        if (ix >= 0)
+        if (doc.RootElement.TryGetProperty("sets", out _))
         {
-            var set = JsonSerializer.Deserialize<XGSetCollection>(contents, jop) ?? throw new Exception("Bad response from server");
-            xgs = set.sets[ix];
+            var sheet = doc.RootElement.Deserialize<XGSetCollection>(jop) ?? throw new Exception("Bad xivgear sheet");
+            var sets = sheet.sets ?? throw new Exception("Sheet has no sets");
+
+            if (ix >= 0)
+            {
+                if (ix >= sets.Count)
+                    throw new Exception($"Set index {ix} out of range (sheet has {sets.Count} sets)");
+                xgs = sets[ix];
+            }
+            else
+            {
+                // no index given: take the first real set
+                xgs = sets.FirstOrDefault(s => !s.isSeparator && s.items is { Count: > 0 })
+                    ?? throw new Exception("Sheet contains no gearsets");
+            }
+        }
+        else if (doc.RootElement.TryGetProperty("items", out _))
+        {
+            xgs = doc.RootElement.Deserialize<XGSet>(jop) ?? throw new Exception("Bad xivgear set");
         }
         else
         {
-            // TODO even for single gearsets, api can return janky results sometimes and cause this to fail, e.g. https://xivgear.app/?page=sl%7Cf4dadaec-dedf-48d9-9936-caaa64033a30
-            xgs = JsonSerializer.Deserialize<XGSet>(contents, jop) ?? throw new Exception("Bad response from server");
+            throw new Exception("JSON is neither an xivgear sheet nor a set");
         }
 
-        var gs = new Gearset(xgs.name);
+        if (xgs.isSeparator || xgs.items == null)
+            throw new Exception("Selected set has no items (is it a separator?)");
+
+        var items = xgs.items;
+        var gs = new Gearset(xgs.name ?? "xivgear import");
 
         void mk(ItemType ty, string field)
         {
-            if (!xgs.items.TryGetValue(field, out var item))
+            if (!items.TryGetValue(field, out var item))
                 return;
 
             var row = Data.Item(item.id);
 
             var slot = new ItemSlot(item.id, ty, row.CanBeHq);
-            for (var i = 0; i < Math.Min(5, item.materia.Count); i++)
-                if (item.materia[i].id >= 0)
-                    slot.Materia[i] = (uint)item.materia[i].id;
+            var materia = item.materia ?? [];
+            for (var i = 0; i < Math.Min(5, materia.Count); i++)
+                if (materia[i].id >= 0)
+                    slot.Materia[i] = (uint)materia[i].id;
 
             gs.Items.Add(slot);
         }
