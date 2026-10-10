@@ -14,8 +14,12 @@ public partial class Import(string input) : AutoTask
     [GeneratedRegex(@"https?:\/\/etro\.gg\/gearset\/([^/]+)", RegexOptions.IgnoreCase, "en-US")]
     private static partial Regex PatternEtro();
 
-    [GeneratedRegex(@"(?:https?:\/\/xivgear\.app\/\?page=sl\||https?:\/\/api\.xivgear\.app\/shortlink\/)([a-zA-Z0-9-]+)(?:&(?:selectedIndex|onlySetIndex)=(\d+))?", RegexOptions.IgnoreCase, "en-US")]
+    // accepts page=sl| anywhere in the query string, or the api shortlink URL
+    [GeneratedRegex(@"(?:https?:\/\/xivgear\.app\/\?(?:[^|#\s]*?&)?page=sl\||https?:\/\/api\.xivgear\.app\/shortlink\/)([a-zA-Z0-9-]+)", RegexOptions.IgnoreCase, "en-US")]
     private static partial Regex PatternXIVG();
+
+    [GeneratedRegex(@"[?&](?:selectedIndex|onlySetIndex)=(\d+)", RegexOptions.IgnoreCase, "en-US")]
+    private static partial Regex PatternXIVGIndex();
 
     protected override async Task Execute()
     {
@@ -26,6 +30,14 @@ public partial class Import(string input) : AutoTask
         {
             Status = "Importing from TC";
             ImportTeamcraft(input);
+            return;
+        }
+
+        // raw xivgear JSON pasted directly (check before unescaping so we don't mangle it)
+        if (input.TrimStart().StartsWith('{'))
+        {
+            Status = "Importing xivgear JSON";
+            ImportXIVGJson(input, -1);
             return;
         }
 
@@ -43,7 +55,8 @@ public partial class Import(string input) : AutoTask
         if (m2.Success)
         {
             Status = "Importing from xivgear";
-            await ImportXIVG(m2.Groups[1].Value, m2.Groups[2].Value);
+            var idx = PatternXIVGIndex().Match(input);
+            await ImportXIVG(m2.Groups[1].Value, idx.Success ? idx.Groups[1].Value : "");
             return;
         }
 
